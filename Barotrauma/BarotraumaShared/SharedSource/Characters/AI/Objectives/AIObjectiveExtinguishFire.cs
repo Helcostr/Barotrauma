@@ -23,19 +23,27 @@ namespace Barotrauma
         // Enum for left or right side of fire to fight
         private enum FightingSide { None, Left, Right };
         private FightingSide fightingSide = FightingSide.None;
-        private WayPoint sideOfFire;
+        private Vector2 sideOfFire;
+        private MovingTarget sideOfFireTarget;
+        class MovingTarget : Entity
+        {
+            private readonly Func<Vector2> posRef;
+            public MovingTarget(Func<Vector2> posRef, Submarine submarine) : base(submarine,0) {
+                this.posRef = posRef;
+            }
+            public override Vector2 Position => posRef();
+            public override Vector2 SimPosition => ConvertUnits.ToSimUnits(Position);
+        }
 
         public AIObjectiveExtinguishFire(Character character, Hull targetHull, AIObjectiveManager objectiveManager, float priorityModifier = 1) 
             : base(character, objectiveManager, priorityModifier)
         {
             this.targetHull = targetHull;
-            SetWaypoint(targetHull.Position + new Vector2(targetHull.Size.X / 2f, -targetHull.Size.Y / 2f));    
+            SetWaypoint(targetHull.Position);
+            sideOfFireTarget = new MovingTarget(() => sideOfFire, targetHull.Submarine);
         }
 
-        private void SetWaypoint(Vector2 worldPos)
-        {
-            sideOfFire = new WayPoint(worldPos, SpawnType.Disabled, targetHull.Submarine);
-        }
+        private void SetWaypoint(Vector2 position) { sideOfFire = position; }
 
         protected override float GetPriority()
         {
@@ -142,39 +150,19 @@ namespace Barotrauma
                     if (fightingSide == FightingSide.Left)
                     {
                         SetWaypoint(fs.Position);
-                        sideOfFire = new WayPoint(fs.Position, SpawnType.Disabled, targetHull.Submarine);
                         DebugConsole.NewMessage($"Fighting Left");
                     }
                     else if (fightingSide == FightingSide.Right)
                     {
-                        sideOfFire = new WayPoint(fs.Position + new Vector2(fs.Size.X, 0), SpawnType.Disabled, targetHull.Submarine);
+                        SetWaypoint(fs.Position + new Vector2(fs.Size.X, 0));
                         DebugConsole.NewMessage($"Fighting Right");
                     }
-
-                    float xDist = Math.Abs(character.WorldPosition.X - ((fightingSide != FightingSide.None) ? (sideOfFire.WorldPosition.X) : (fs.WorldPosition.X + fs.Size.X / 2f) ) );
-                    // Log the character worldposx, log if we are using side of fire as a waypoint, and also the fire source worldposx and the size divided by 2
-                    DebugConsole.NewMessage($"{character.Name}: Character WorldPosX: {character.WorldPosition.X} SideOfFire: {(fightingSide != FightingSide.None ? sideOfFire.WorldPosition.X : fs.WorldPosition.X + fs.Size.X / 2f)} FireSource: {fs.WorldPosition.X + fs.Size.X / 2f} Size: {fs.Size.X / 2f} XDist: {xDist}");
-                    // If fire source and the character are on the same level, it's better to ignore the y-axis (e.g. it doesn't matter if we stand or crouch), as the fire size is rectangular.
-                    // If we'd do this while climbing, the character would often get too close to the fire.
-                    ;
-                    float yDist = !character.IsClimbing && MathUtils.NearlyEqual(
-                        character.WorldPosition.Y - ConvertUnits.ToDisplayUnits(character.AnimController.ColliderHeightFromFloor),
-                        targetHull.WorldPosition.Y - targetHull.Size.Y
-                    ) ? 0.0f : Math.Abs(
-                        character.WorldPosition.Y
-                        - ConvertUnits.ToDisplayUnits(character.AnimController.ColliderHeightFromFloor)
-                        - (fightingSide != FightingSide.None ? sideOfFire.WorldPosition.Y : fs.WorldPosition.Y)
-                    );
-                    float distSqr = xDist*xDist + yDist*yDist;
-                    DebugConsole.NewMessage($"{character.Name}: Dist Sqr: {distSqr} ({xDist}, {yDist})");
+                    float distSqr = Vector2.DistanceSquared(character.WorldPosition, sideOfFireTarget.WorldPosition);
                     bool inRange = distSqr < extinguisher.Range * extinguisher.Range;
                     bool isInDamageRange = fs.IsInDamageRange(character, fs.DamageRange) && character.CanSeeTarget(targetHull);
                     if (isInDamageRange) lastDmgTime = 0;
-                    DebugConsole.NewMessage($"{character.Name}: {(character.CanSeeTarget(sideOfFire) ? "Can see fire!!!" : "Can't see fire yet...")}");
-                    DebugConsole.NewMessage($"{character.Name}: {(inRange ? "In range" : "Not in range")}");
-                    DebugConsole.NewMessage($"{character.Name}: {(isInDamageRange ? "I am in dmg range" : "I am not in dmg range")}");
-                    bool moveCloser = !isInDamageRange && (!inRange || !character.CanSeeTarget(sideOfFire)) && lastDmgTime > dmgDelayMove;
-                    bool operateExtinguisher = !moveCloser || (inRange && character.CanSeeTarget(sideOfFire));
+                    bool moveCloser = !isInDamageRange && lastDmgTime > dmgDelayMove;
+                    bool operateExtinguisher = !moveCloser || (inRange && character.CanSeeTarget(sideOfFireTarget));
                     if (operateExtinguisher)
                     {
                         character.CursorPosition = fs.Position + new Vector2(fs.Size.X, 0);
@@ -195,32 +183,26 @@ namespace Barotrauma
                         // Prevents running into the flames.
                         objectiveManager.CurrentObjective.ForceWalk = true;
                     }
+                    if (isInDamageRange && gotoObjective != null)
+                    {
+                        gotoObjective.Abandoned -= GoToAbandoned;
+                        gotoObjective.Abandon = true;
+                    }
                     if (moveCloser)
                     {
-                        if (fightingSide == FightingSide.Left)
-                        {
-                            sideOfFire = new WayPoint(fs.Position, SpawnType.Disabled, targetHull.Submarine);
-                            DebugConsole.NewMessage($"{character.Name}: Fighting Left");
-                        } else if (fightingSide == FightingSide.Right)
-                        {
-                            sideOfFire = new WayPoint(fs.Position + new Vector2(fs.Size.X, 0), SpawnType.Disabled, targetHull.Submarine);
-                            DebugConsole.NewMessage($"{character.Name}: Fighting Right");
-                        }
-
-                        DebugConsole.NewMessage($"{character.Name}: Adding Pathing Objective #{++debugMoveCloser}.");
                         if (TryAddSubObjective(
                             ref gotoObjective,
-                            () => new AIObjectiveGoTo(sideOfFire, character, objectiveManager, closeEnough: fightingSide == FightingSide.None ? extinguisher.Range * .8f : 0)
+                            () =>
                             {
-                                DialogueIdentifier = AIObjectiveGoTo.DialogCannotReachFire,
-                                TargetName = fs.Hull.DisplayName,
-                                AlwaysUseEuclideanDistance = true,
+                                DebugConsole.NewMessage($"{character.Name}: Adding Pathing Objective #{++debugMoveCloser}.");
+                                return new AIObjectiveGoTo(sideOfFireTarget, character, objectiveManager, closeEnough: fightingSide == FightingSide.None ? extinguisher.Range * .8f : 0)
+                                {
+                                    DialogueIdentifier = AIObjectiveGoTo.DialogCannotReachFire,
+                                    TargetName = fs.Hull.DisplayName,
+                                    AlwaysUseEuclideanDistance = true,
+                                };
                             },
-                            onAbandon: () => {
-                                Abandon = true;
-                                // debug console that sideoffire is not null
-                                DebugConsole.NewMessage($"{character.Name}: Abandoning WP:{sideOfFire.WorldPosition}, IgnoreUnsafe:{gotoObjective.IgnoreUnsafeHulls}");
-                            },
+                            onAbandon: GoToAbandoned,
                             onCompleted: () => {
                                 RemoveSubObjective(ref gotoObjective);
                                 DebugConsole.NewMessage($"{character.Name}: Completed");
@@ -229,7 +211,7 @@ namespace Barotrauma
                         {
                             gotoObjective.requiredCondition = () =>
                             {
-                                bool test = character.CanSeeTarget(sideOfFire);
+                                bool test = character.CanSeeTarget(sideOfFireTarget);
                                 return test;
                             };
                         }
@@ -244,6 +226,10 @@ namespace Barotrauma
                     break;
                 }
             }
+        }
+        private void GoToAbandoned() {
+            Abandon = true;
+            DebugConsole.NewMessage($"{character.Name}: Path Abandoned. Last going to {sideOfFire} {sideOfFireTarget.WorldPosition}.");
         }
 
         public override void Reset()

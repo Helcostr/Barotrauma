@@ -108,7 +108,7 @@ namespace Barotrauma
             
             hull.AddFireSource(this);
             
-            position = worldPosition - new Vector2(-5.0f, 5.0f);
+            position = worldPosition - new Vector2(5.0f, -5.0f);
             if (hull.Submarine != null)
             {
                 submarine = hull.Submarine;
