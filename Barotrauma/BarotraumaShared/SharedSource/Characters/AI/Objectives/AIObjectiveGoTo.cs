@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.Linq;
 using Barotrauma.Extensions;
 using Barotrauma.Items.Components;
+using FarseerPhysics;
 
 namespace Barotrauma
 {
@@ -853,7 +854,7 @@ namespace Barotrauma
                     float xDist = Math.Abs(Target.WorldPosition.X - character.WorldPosition.X);
                     return xDist <= CloseEnough;
                 }
-                Vector2 sourcePos = UseDistanceRelativeToAimSourcePos ? character.AnimController.AimSourceWorldPos : character.WorldPosition;
+                Vector2 sourcePos = UseDistanceRelativeToAimSourcePos ? character.AnimController.AimSourceWorldPos : character.WorldPosition - new Vector2(0, ConvertUnits.ToDisplayUnits(character.AnimController.GetHeightFromFloor()));
                 return Vector2.DistanceSquared(Target.WorldPosition, sourcePos) < CloseEnough * CloseEnough;
             }
         }

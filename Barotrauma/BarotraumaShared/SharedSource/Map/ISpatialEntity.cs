@@ -75,8 +75,6 @@ namespace Barotrauma
             if (seeingEntity == null) { return false; }
             // TODO: Could we just use the method below? If not, let's refactor it so that we can.
             Vector2 diff = ConvertUnits.ToSimUnits(target.WorldPosition - seeingEntity.WorldPosition);
-            if (target is FireSource)
-                DebugConsole.NewMessage($"Looking at fire source. WorldPos: {target.WorldPosition}, Pos: {target.Position}, Size: {(target as FireSource).Size}.");
             if (checkFacing && seeingEntity is Character seeingCharacter)
             {
                 if (Math.Sign(diff.X) != seeingCharacter.AnimController.Dir) { return false; }

@@ -3,6 +3,7 @@ using Microsoft.Xna.Framework;
 using System;
 using System.Linq;
 using Barotrauma.Extensions;
+using FarseerPhysics;
 
 namespace Barotrauma
 {
@@ -22,11 +23,18 @@ namespace Barotrauma
         // Enum for left or right side of fire to fight
         private enum FightingSide { None, Left, Right };
         private FightingSide fightingSide = FightingSide.None;
+        private WayPoint sideOfFire;
 
         public AIObjectiveExtinguishFire(Character character, Hull targetHull, AIObjectiveManager objectiveManager, float priorityModifier = 1) 
             : base(character, objectiveManager, priorityModifier)
         {
             this.targetHull = targetHull;
+            SetWaypoint(targetHull.Position + new Vector2(targetHull.Size.X / 2f, -targetHull.Size.Y / 2f));    
+        }
+
+        private void SetWaypoint(Vector2 worldPos)
+        {
+            sideOfFire = new WayPoint(worldPos, SpawnType.Disabled, targetHull.Submarine);
         }
 
         protected override float GetPriority()
@@ -83,6 +91,7 @@ namespace Barotrauma
         private float sinTime;
         private float lastDmgTime;
         private const float dmgDelayMove = 0.5f;
+        private int debugMoveCloser = 0;
         protected override void Act(float deltaTime)
         {
             lastDmgTime += deltaTime;
@@ -128,21 +137,50 @@ namespace Barotrauma
                         Abandon = true;
                         break;
                     }
-                    float xDist = Math.Abs(character.WorldPosition.X - fs.WorldPosition.X);
+                    if (fightingSide == FightingSide.None && character.CanSeeTarget(fs))
+                        fightingSide = fs.WorldPosition.X + fs.Size.X / 2f < character.WorldPosition.X ? FightingSide.Right : FightingSide.Left;
+                    if (fightingSide == FightingSide.Left)
+                    {
+                        SetWaypoint(fs.Position);
+                        sideOfFire = new WayPoint(fs.Position, SpawnType.Disabled, targetHull.Submarine);
+                        DebugConsole.NewMessage($"Fighting Left");
+                    }
+                    else if (fightingSide == FightingSide.Right)
+                    {
+                        sideOfFire = new WayPoint(fs.Position + new Vector2(fs.Size.X, 0), SpawnType.Disabled, targetHull.Submarine);
+                        DebugConsole.NewMessage($"Fighting Right");
+                    }
+
+                    float xDist = Math.Abs(character.WorldPosition.X - ((fightingSide != FightingSide.None) ? (sideOfFire.WorldPosition.X) : (fs.WorldPosition.X + fs.Size.X / 2f) ) );
+                    // Log the character worldposx, log if we are using side of fire as a waypoint, and also the fire source worldposx and the size divided by 2
+                    DebugConsole.NewMessage($"{character.Name}: Character WorldPosX: {character.WorldPosition.X} SideOfFire: {(fightingSide != FightingSide.None ? sideOfFire.WorldPosition.X : fs.WorldPosition.X + fs.Size.X / 2f)} FireSource: {fs.WorldPosition.X + fs.Size.X / 2f} Size: {fs.Size.X / 2f} XDist: {xDist}");
                     // If fire source and the character are on the same level, it's better to ignore the y-axis (e.g. it doesn't matter if we stand or crouch), as the fire size is rectangular.
                     // If we'd do this while climbing, the character would often get too close to the fire.
-                    float yDist = !character.IsClimbing && MathUtils.NearlyEqual(character.CurrentHull.WorldPosition.Y, targetHull.WorldPosition.Y) ? 0.0f : Math.Abs(character.CurrentHull.WorldPosition.Y - fs.WorldPosition.Y);
-                    float dist = xDist + yDist;
-                    bool inRange = dist < extinguisher.Range;
+                    ;
+                    float yDist = !character.IsClimbing && MathUtils.NearlyEqual(
+                        character.WorldPosition.Y - ConvertUnits.ToDisplayUnits(character.AnimController.ColliderHeightFromFloor),
+                        targetHull.WorldPosition.Y - targetHull.Size.Y
+                    ) ? 0.0f : Math.Abs(
+                        character.WorldPosition.Y
+                        - ConvertUnits.ToDisplayUnits(character.AnimController.ColliderHeightFromFloor)
+                        - (fightingSide != FightingSide.None ? sideOfFire.WorldPosition.Y : fs.WorldPosition.Y)
+                    );
+                    float distSqr = xDist*xDist + yDist*yDist;
+                    DebugConsole.NewMessage($"{character.Name}: Dist Sqr: {distSqr} ({xDist}, {yDist})");
+                    bool inRange = distSqr < extinguisher.Range * extinguisher.Range;
                     bool isInDamageRange = fs.IsInDamageRange(character, fs.DamageRange) && character.CanSeeTarget(targetHull);
                     if (isInDamageRange) lastDmgTime = 0;
-                    bool moveCloser = !isInDamageRange && (!inRange || !character.CanSeeTarget(targetHull)) && lastDmgTime > dmgDelayMove;
-                    bool operateExtinguisher = !moveCloser || (dist < extinguisher.Range * 1.2f && character.CanSeeTarget(targetHull));
+                    DebugConsole.NewMessage($"{character.Name}: {(character.CanSeeTarget(sideOfFire) ? "Can see fire!!!" : "Can't see fire yet...")}");
+                    DebugConsole.NewMessage($"{character.Name}: {(inRange ? "In range" : "Not in range")}");
+                    DebugConsole.NewMessage($"{character.Name}: {(isInDamageRange ? "I am in dmg range" : "I am not in dmg range")}");
+                    bool moveCloser = !isInDamageRange && (!inRange || !character.CanSeeTarget(sideOfFire)) && lastDmgTime > dmgDelayMove;
+                    bool operateExtinguisher = !moveCloser || (inRange && character.CanSeeTarget(sideOfFire));
                     if (operateExtinguisher)
                     {
-                        character.CursorPosition = fs.Position;
+                        character.CursorPosition = fs.Position + new Vector2(fs.Size.X, 0);
                         Vector2 fromCharacterToFireSource = fs.WorldPosition - character.WorldPosition;
-                        character.CursorPosition += VectorExtensions.Forward(extinguisherItem.body.TransformedRotation + (float)Math.Sin(sinTime) / 2, fromCharacterToFireSource.Length() / 2);
+                        // Because AI can shoot fire from below, sine motion doesn't make sense. Need to readjust  the sin math to only what is visible.
+                        // character.CursorPosition += VectorExtensions.Forward(extinguisherItem.body.TransformedRotation + (float)Math.Sin(sinTime) / 2, fromCharacterToFireSource.Length() / 2);
                         if (extinguisherItem.RequireAimToUse)
                         {
                             character.SetInput(InputType.Aim, false, true);
@@ -159,18 +197,41 @@ namespace Barotrauma
                     }
                     if (moveCloser)
                     {
+                        if (fightingSide == FightingSide.Left)
+                        {
+                            sideOfFire = new WayPoint(fs.Position, SpawnType.Disabled, targetHull.Submarine);
+                            DebugConsole.NewMessage($"{character.Name}: Fighting Left");
+                        } else if (fightingSide == FightingSide.Right)
+                        {
+                            sideOfFire = new WayPoint(fs.Position + new Vector2(fs.Size.X, 0), SpawnType.Disabled, targetHull.Submarine);
+                            DebugConsole.NewMessage($"{character.Name}: Fighting Right");
+                        }
+
+                        DebugConsole.NewMessage($"{character.Name}: Adding Pathing Objective #{++debugMoveCloser}.");
                         if (TryAddSubObjective(
                             ref gotoObjective,
-                            () => new AIObjectiveGoTo(fs, character, objectiveManager,closeEnough: extinguisher.Range * 0.8f)
+                            () => new AIObjectiveGoTo(sideOfFire, character, objectiveManager, closeEnough: fightingSide == FightingSide.None ? extinguisher.Range * .8f : 0)
                             {
                                 DialogueIdentifier = AIObjectiveGoTo.DialogCannotReachFire,
-                                TargetName = fs.Hull.DisplayName
+                                TargetName = fs.Hull.DisplayName,
+                                AlwaysUseEuclideanDistance = true,
                             },
-                            onAbandon: () => Abandon = true,
-                            onCompleted: () => RemoveSubObjective(ref gotoObjective)
+                            onAbandon: () => {
+                                Abandon = true;
+                                // debug console that sideoffire is not null
+                                DebugConsole.NewMessage($"{character.Name}: Abandoning WP:{sideOfFire.WorldPosition}, IgnoreUnsafe:{gotoObjective.IgnoreUnsafeHulls}");
+                            },
+                            onCompleted: () => {
+                                RemoveSubObjective(ref gotoObjective);
+                                DebugConsole.NewMessage($"{character.Name}: Completed");
+                            }
                         ))
                         {
-                            gotoObjective.requiredCondition = () => character.CanSeeTarget(fs);
+                            gotoObjective.requiredCondition = () =>
+                            {
+                                bool test = character.CanSeeTarget(sideOfFire);
+                                return test;
+                            };
                         }
                     }
                     else if (!operateExtinguisher || isInDamageRange)
