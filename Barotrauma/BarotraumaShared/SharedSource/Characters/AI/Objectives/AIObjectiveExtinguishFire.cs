@@ -19,6 +19,9 @@ namespace Barotrauma
 
         private AIObjectiveGetItem getExtinguisherObjective;
         private AIObjectiveGoTo gotoObjective;
+        // Enum for left or right side of fire to fight
+        private enum FightingSide { None, Left, Right };
+        private FightingSide fightingSide = FightingSide.None;
 
         public AIObjectiveExtinguishFire(Character character, Hull targetHull, AIObjectiveManager objectiveManager, float priorityModifier = 1) 
             : base(character, objectiveManager, priorityModifier)
@@ -78,8 +81,11 @@ namespace Barotrauma
         protected override bool CheckObjectiveState() => targetHull.FireSources.None();
 
         private float sinTime;
+        private float lastDmgTime;
+        private const float dmgDelayMove = 0.5f;
         protected override void Act(float deltaTime)
         {
+            lastDmgTime += deltaTime;
             var extinguisherItem = character.Inventory.FindItemByTag(Tags.FireExtinguisher);
             if (extinguisherItem == null || extinguisherItem.Condition <= 0.0f || !character.HasEquippedItem(extinguisherItem))
             {
@@ -129,7 +135,8 @@ namespace Barotrauma
                     float dist = xDist + yDist;
                     bool inRange = dist < extinguisher.Range;
                     bool isInDamageRange = fs.IsInDamageRange(character, fs.DamageRange) && character.CanSeeTarget(targetHull);
-                    bool moveCloser = !isInDamageRange && (!inRange || !character.CanSeeTarget(targetHull));
+                    if (isInDamageRange) lastDmgTime = 0;
+                    bool moveCloser = !isInDamageRange && (!inRange || !character.CanSeeTarget(targetHull)) && lastDmgTime > dmgDelayMove;
                     bool operateExtinguisher = !moveCloser || (dist < extinguisher.Range * 1.2f && character.CanSeeTarget(targetHull));
                     if (operateExtinguisher)
                     {
@@ -152,15 +159,18 @@ namespace Barotrauma
                     }
                     if (moveCloser)
                     {
-                        if (TryAddSubObjective(ref gotoObjective, () => new AIObjectiveGoTo(fs, character, objectiveManager, closeEnough: extinguisher.Range * 0.8f)
+                        if (TryAddSubObjective(
+                            ref gotoObjective,
+                            () => new AIObjectiveGoTo(fs, character, objectiveManager,closeEnough: extinguisher.Range * 0.8f)
+                            {
+                                DialogueIdentifier = AIObjectiveGoTo.DialogCannotReachFire,
+                                TargetName = fs.Hull.DisplayName
+                            },
+                            onAbandon: () => Abandon = true,
+                            onCompleted: () => RemoveSubObjective(ref gotoObjective)
+                        ))
                         {
-                            DialogueIdentifier = AIObjectiveGoTo.DialogCannotReachFire,
-                            TargetName = fs.Hull.DisplayName
-                        },
-                        onAbandon: () => Abandon = true,
-                        onCompleted: () => RemoveSubObjective(ref gotoObjective)))
-                        {
-                            gotoObjective.requiredCondition = () => character.CanSeeTarget(targetHull);
+                            gotoObjective.requiredCondition = () => character.CanSeeTarget(fs);
                         }
                     }
                     else if (!operateExtinguisher || isInDamageRange)
