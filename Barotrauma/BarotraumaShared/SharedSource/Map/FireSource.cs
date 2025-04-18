@@ -18,6 +18,7 @@ namespace Barotrauma
         const float OxygenConsumption = 50.0f;
         const float GrowSpeed = 20.0f;
         const float MaxDamageRange = 250.0f;
+        const float MaxFireHeight = 60.0f;
 
         protected Hull hull;
 
@@ -131,7 +132,7 @@ namespace Barotrauma
             position.Y = Math.Min(hull.Rect.Y, position.Y);
 
             size.X = Math.Min(hull.Rect.Width - (position.X - hull.Rect.X), size.X);
-            size.Y = Math.Min(hull.Rect.Height - (hull.Rect.Y - position.Y), size.Y);
+            size.Y = Math.Min(MaxFireHeight, size.Y);
         }
 
         public static void UpdateAll(List<FireSource> fireSources, float deltaTime)
@@ -227,9 +228,9 @@ namespace Barotrauma
             AdjustXPos(growModifier, deltaTime);
 
             size.X += GrowSpeed * growModifier * deltaTime;
-            size.Y = MathHelper.Clamp(size.Y + GrowSpeed * growModifier * deltaTime, 10.0f, 50.0f);
+            size.Y = size.Y + GrowSpeed * growModifier * deltaTime;
 
-            if (size.X > 50.0f)
+            if (size.X > MaxFireHeight)
             {
                 this.position.Y = MathHelper.Lerp(this.position.Y, hull.Rect.Y - hull.Rect.Height + size.Y, deltaTime);
             }
