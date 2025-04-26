@@ -228,7 +228,7 @@ namespace Barotrauma
             AdjustXPos(growModifier, deltaTime);
 
             size.X += GrowSpeed * growModifier * deltaTime;
-            size.Y = size.Y + GrowSpeed * growModifier * deltaTime;
+            size.Y = size.Y + GrowSpeed * growModifier * deltaTime * MaxFireHeight / hull.Rect.Width;
 
             if (size.X > MaxFireHeight)
             {

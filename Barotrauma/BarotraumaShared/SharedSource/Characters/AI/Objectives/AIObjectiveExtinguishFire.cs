@@ -22,6 +22,7 @@ namespace Barotrauma
         private AIObjectiveGoTo gotoObjective;
         // Enum for left or right side of fire to fight
         private enum FightingSide { None, Left, Right };
+        private bool runningAway = false;
         private FightingSide fightingSide = FightingSide.None;
         private Vector2 sideOfFire;
         private MovingTarget sideOfFireTarget;
@@ -47,6 +48,7 @@ namespace Barotrauma
 
         protected override float GetPriority()
         {
+            if (runningAway) return 0;
             if (!IsAllowed)
             {
                 HandleDisallowed();
@@ -100,14 +102,29 @@ namespace Barotrauma
         private float lastDmgTime;
         private const float dmgDelayMove = 0.5f;
         private int debugMoveCloser = 0;
+
+        private const int cacheSize = 5;
+        private WayPoint[] cachePathNode = new WayPoint[cacheSize];
+
+        private void UpdateOldPath()
+        {
+            if (character.AIController is HumanAIController)
+            {
+                SteeringPath path = (character.AIController as HumanAIController).PathSteering.CurrentPath;
+                if (path == null || path.CurrentNode == null) return;
+                if (path.CurrentNode.ID == cachePathNode[cacheSize - 1]?.ID) return;
+                for (int i = 0; i < cacheSize - 1; i++) { cachePathNode[i] = cachePathNode[i+1]; }
+                cachePathNode[cacheSize - 1] = path.CurrentNode;
+                DebugConsoleNewMessage($"Old path index: {cachePathNode[cacheSize-2]?.ID}, current path index: {cachePathNode[cacheSize-1]?.ID}");
+            }
+        }
         protected override void Act(float deltaTime)
         {
             lastDmgTime += deltaTime;
             var extinguisherItem = character.Inventory.FindItemByTag(Tags.FireExtinguisher);
             if (extinguisherItem == null || extinguisherItem.Condition <= 0.0f || !character.HasEquippedItem(extinguisherItem))
             {
-                TryAddSubObjective(ref getExtinguisherObjective, () =>
-                {
+                TryAddSubObjective(ref getExtinguisherObjective, () => {
                     if (character.IsOnPlayerTeam && !character.HasEquippedItem(Tags.FireExtinguisher, allowBroken: false))
                     {
                         character.Speak(TextManager.Get("DialogFindExtinguisher").Value, null, 2.0f, Tags.FireExtinguisher, 30.0f);
@@ -136,6 +153,7 @@ namespace Barotrauma
                     Abandon = true;
                     return;
                 }
+                UpdateOldPath();
                 foreach (FireSource fs in targetHull.FireSources)
                 {
                     if (fs == null) { continue; }
@@ -147,15 +165,14 @@ namespace Barotrauma
                     }
                     if (fightingSide == FightingSide.None && character.CanSeeTarget(fs))
                         fightingSide = fs.WorldPosition.X + fs.Size.X / 2f < character.WorldPosition.X ? FightingSide.Right : FightingSide.Left;
+
                     if (fightingSide == FightingSide.Left)
                     {
                         SetWaypoint(fs.Position);
-                        DebugConsole.NewMessage($"Fighting Left");
                     }
                     else if (fightingSide == FightingSide.Right)
                     {
                         SetWaypoint(fs.Position + new Vector2(fs.Size.X, 0));
-                        DebugConsole.NewMessage($"Fighting Right");
                     }
                     float distSqr = Vector2.DistanceSquared(character.WorldPosition, sideOfFireTarget.WorldPosition);
                     bool inRange = distSqr < extinguisher.Range * extinguisher.Range;
@@ -183,12 +200,58 @@ namespace Barotrauma
                         // Prevents running into the flames.
                         objectiveManager.CurrentObjective.ForceWalk = true;
                     }
-                    if (isInDamageRange && gotoObjective != null)
+                    if (isInDamageRange)
                     {
-                        gotoObjective.Abandoned -= GoToAbandoned;
-                        gotoObjective.Abandon = true;
+                        
+                        if (!runningAway && gotoObjective != null)
+                        {
+                            gotoObjective.Abandoned -= GoToAbandoned;
+                            gotoObjective.Abandon = true;
+                            RemoveSubObjective(ref gotoObjective);
+                        }
+                        if (!runningAway && gotoObjective == null && TryAddSubObjective(ref gotoObjective, () =>
+                        {
+                            runningAway = true;
+                            DebugConsoleNewMessage($"Ouchie, fleeing {runningAway}.");
+                            
+                            return new AIObjectiveGoTo(cachePathNode[0], character, objectiveManager,priorityModifier: AIObjectiveManager.MaxObjectivePriority)
+                            {
+                                Priority = AIObjectiveManager.MaxObjectivePriority,
+                                // Owwie, I'm on fire
+                                AbortCondition = (obj) => !fs.IsInDamageRange(character, fs.DamageRange) || !character.CanSeeTarget(sideOfFireTarget),
+                            };
+                        }, onAbandon: GoToAbandoned, onCompleted: () =>
+                        {
+                            RemoveSubObjective(ref gotoObjective);
+                            DebugConsoleNewMessage("Going to waypoint done.");
+                            runningAway = false;
+                        }))
+                        {
+                            DebugConsoleNewMessage($"Created runaway.");
+                            // list all sub objectives in debug console new message
+                            foreach (var subObjective in SubObjectives)
+                            {
+                                if (subObjective is AIObjectiveGoTo focusedObjective)
+                                {
+                                    DebugConsoleNewMessage($"Subobjective: {subObjective.Identifier} - {subObjective.GetType().Name}, Destination ID: {(focusedObjective.Target as WayPoint).ID}");
+                                }
+                                else
+                                {
+                                    DebugConsoleNewMessage($"Subobjective: {subObjective.Identifier} - {subObjective.GetType().Name}");
+                                }
+                            }
+                            DebugConsoleNewMessage($"Priority: {gotoObjective.Priority}");
+                        }
                     }
-                    if (moveCloser)
+                    if (MathUtils.NearlyEqual(lastDmgTime,deltaTime) && gotoObjective != null)
+                    {
+                        DebugConsoleNewMessage("Free from fire.");
+                        gotoObjective.Abandoned -= GoToAbandoned;
+                        PathSteering.Reset();
+                        RemoveSubObjective(ref gotoObjective);
+                        runningAway = false;
+                    }
+                    if (!runningAway && moveCloser)
                     {
                         if (TryAddSubObjective(
                             ref gotoObjective,
@@ -205,7 +268,7 @@ namespace Barotrauma
                             onAbandon: GoToAbandoned,
                             onCompleted: () => {
                                 RemoveSubObjective(ref gotoObjective);
-                                DebugConsole.NewMessage($"{character.Name}: Completed");
+                                DebugConsole.NewMessage($"{character.Name}: Finished navigating closer to fire.");
                             }
                         ))
                         {
@@ -227,6 +290,11 @@ namespace Barotrauma
                 }
             }
         }
+
+        private void DebugConsoleNewMessage(string message) {
+            DebugConsole.NewMessage($"{character.Name}: {message}");
+            character.Speak($"d:{message}", Networking.ChatMessageType.Radio);
+        }
         private void GoToAbandoned() {
             Abandon = true;
             DebugConsole.NewMessage($"{character.Name}: Path Abandoned. Last going to {sideOfFire} {sideOfFireTarget.WorldPosition}.");
@@ -236,19 +304,25 @@ namespace Barotrauma
         {
             base.Reset();
             getExtinguisherObjective = null;
-            gotoObjective = null;
+            if (gotoObjective != null) {
+                gotoObjective.Abandoned -= GoToAbandoned;
+                gotoObjective = null;
+            }
             sinTime = 0;
+            SetWaypoint(targetHull.Position);
             SteeringManager?.Reset();
         }
 
         protected override void OnCompleted()
         {
+            sideOfFireTarget?.Remove();
             base.OnCompleted();
             SteeringManager?.Reset();
         }
 
         protected override void OnAbandon()
         {
+            sideOfFireTarget?.Remove();
             base.OnAbandon();
             SteeringManager?.Reset();
         }
