@@ -2871,6 +2871,7 @@ namespace Barotrauma
             if (targetCharacter != null)
             {
                 targetCharacter.TeleportTo(worldPosition);
+                NewMessage($"Successfully teleported {targetCharacter.Name} to {worldPosition}");
                 targetCharacter.AnimController.BodyInRest = false;
             }
             else
